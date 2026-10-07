@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Heat Conduction Rod Simulator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0a0a0f; }
+  input[type=range] { accent-color: #60a5fa; }
+  canvas { display: block; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center bg-[#0a0a0f] text-white p-4">
+
+<div class="w-full max-w-3xl">
+  <div class="text-center mb-4">
+    <h1 class="text-3xl font-bold text-blue-400 mb-1">Heat Conduction Simulator</h1>
+    <p class="text-slate-400 text-sm">1D finite difference heat diffusion along a rod</p>
+  </div>
+
+  <!-- Controls Grid -->
+  <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+    <!-- Rod Length -->
+    <div class="bg-slate-900 rounded-xl p-3">
+      <label for="rodLen" class="text-xs text-slate-400 block mb-1">Rod length (cells)</label>
+      <input id="rodLen" type="range" min="20" max="100" value="60" class="w-full" aria-label="Rod length">
+      <div class="text-sm text-blue-300 text-right"><span id="rodLenVal">60</span></div>
+    </div>
+    <!-- Left Temp -->
+    <div class="bg-slate-900 rounded-xl p-3">
+      <label for="leftTemp" class="text-xs text-slate-400 block mb-1">Left boundary (°C)</label>
+      <input id="leftTemp" type="range" min="0" max="100" value="100" class="w-full" aria-label="Left boundary temperature">
+      <div class="text-sm text-red-300 text-right"><span id="leftTempVal">100</span>°C</div>
+    </div>
+    <!-- Right Temp -->
+    <div class="bg-slate-900 rounded-xl p-3">
+      <label for="rightTemp" class="text-xs text-slate-400 block mb-1">Right boundary (°C)</label>
+      <input id="rightTemp" type="range" min="0" max="100" value="0" class="w-full" aria-label="Right boundary temperature">
+      <div class="text-sm text-blue-300 text-right"><span id="rightTempVal">0</span>°C</div>
+    </div>
+    <!-- Initial Temp -->
+    <div class="bg-slate-900 rounded-xl p-3">
+      <label for="initTemp" class="text-xs text-slate-400 block mb-1">Initial temp (°C)</label>
+      <input id="initTemp" type="range" min="0" max="100" value="20" class="w-full" aria-label="Initial temperature">
+      <div class="text-sm text-green-300 text-right"><span id="initTempVal">20</span>°C</div>
+    </div>
+    <!-- Material -->
+    <div class="bg-slate-900 rounded-xl p-3">
+      <label for="materialSel" class="text-xs text-slate-400 block mb-1">Material (α)</label>
+      <select id="materialSel" class="bg-slate-800 text-white text-sm rounded px-2 py-1 w-full border border-slate-600" aria-label="Material preset">
+        <option value="1.17">Copper (1.17)</option>
+        <option value="0.84">Aluminum (0.84)</option>
+        <option value="0.12" selected>Steel (0.12)</option>
+        <option value="0.08">Wood (0.08)</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input id="customAlpha" type="number" min="0.01" max="5" step="0.01" value="0.12" class="bg-slate-700 text-white text-sm rounded px-2 py-1 w-full mt-1 border border-slate-600 hidden" aria-label="Custom thermal diffusivity">
+    </div>
+    <!-- Step Info -->
+    <div class="bg-slate-900 rounded-xl p-3 flex flex-col justify-center">
+      <div class="text-xs text-slate-400">Time step</div>
+      <div id="stepDisplay" class="text-xl font-mono text-yellow-300">0</div>
+      <div class="text-xs text-slate-400 mt-1">α = <span id="alphaDisplay" class="text-cyan-300">0.12</span></div>
+    </div>
+  </div>
+
+  <!-- Line Chart Canvas -->
+  <div class="bg-slate-900 rounded-xl p-3 mb-3">
+    <div class="text-xs text-slate-400 mb-2">Temperature Profile</div>
+    <canvas id="chartCanvas" width="700" height="120" aria-label="Temperature profile line chart"></canvas>
+  </div>
+
+  <!-- Rod Heatmap Canvas -->
+  <div class="bg-slate-900 rounded-xl p-3 mb-4">
+    <div class="text-xs text-slate-400 mb-2">Rod Visualization (blue=cold → red=hot)</div>
+    <canvas id="rodCanvas" width="700" height="60" aria-label="Rod heatmap visualization"></canvas>
+  </div>
+
+  <!-- Buttons -->
+  <div class="flex gap-3 justify-center flex-wrap">
+    <button id="playBtn" class="bg-blue-700 hover:bg-blue-600 text-white font-bold px-5 py-2 rounded-lg transition" aria-label="Play or pause simulation">▶ Play</button>
+    <button id="stepBtn" class="bg-slate-700 hover:bg-slate-600 text-white font-bold px-5 py-2 rounded-lg transition" aria-label="Step simulation one tick">Step</button>
+    <button id="resetBtn" class="bg-slate-700 hover:bg-slate-600 text-white font-bold px-5 py-2 rounded-lg transition" aria-label="Reset simulation">Reset</button>
+  </div>
+</div>
+
+<script>
+const chartCanvas = document.getElementById('chartCanvas');
+const cctx = chartCanvas.getContext('2d');
+const rodCanvas = document.getElementById('rodCanvas');
+const rctx = rodCanvas.getContext('2d');
+
+let N, TL, TR, T0, alpha, u, stepCount, running, animId;
+const DX = 1.0, DT = 0.4;
+
+function getAlpha() {
+  const sel = document.getElementById('materialSel').value;
+  return sel === 'custom' ? parseFloat(document.getElementById('customAlpha').value) || 0.12 : parseFloat(sel);
+}
+
+function init() {
+  N = parseInt(document.getElementById('rodLen').value);
+  TL = parseInt(document.getElementById('leftTemp').value);
+  TR = parseInt(document.getElementById('rightTemp').value);
+  T0 = parseInt(document.getElementById('initTemp').value);
+  alpha = getAlpha();
+  u = Array(N).fill(T0);
+  u[0] = TL; u[N-1] = TR;
+  stepCount = 0;
+  document.getElementById('stepDisplay').textContent = 0;
+  document.getElementById('alphaDisplay').textContent = alpha.toFixed(3);
+  render();
+}
+
+function step() {
+  alpha = getAlpha();
+  const r = alpha * DT / (DX * DX);
+  if (r > 0.5) { /* stability warning - cap dt */ }
+  const unew = u.slice();
+  for (let i = 1; i < N - 1; i++) {
+    unew[i] = u[i] + r * (u[i+1] - 2*u[i] + u[i-1]);
+  }
+  unew[0] = TL; unew[N-1] = TR;
+  u = unew;
+  stepCount++;
+  document.getElementById('stepDisplay').textContent = stepCount;
+}
+
+function tempColor(t) {
+  const clamped = Math.max(0, Math.min(100, t));
+  const h = (1 - clamped / 100) * 240; // blue(240)→red(0)
+  return `hsl(${h}, 90%, 55%)`;
+}
+
+function tempColorRGB(t) {
+  const clamped = Math.max(0, Math.min(100, t));
+  // interpolate blue→cyan→green→yellow→red
+  const ratio = clamped / 100;
+  let r, g, b;
+  if (ratio < 0.25) { const p=ratio/0.25; r=0; g=Math.round(p*255); b=255; }
+  else if (ratio < 0.5) { const p=(ratio-0.25)/0.25; r=0; g=255; b=Math.round((1-p)*255); }
+  else if (ratio < 0.75) { const p=(ratio-0.5)/0.25; r=Math.round(p*255); g=255; b=0; }
+  else { const p=(ratio-0.75)/0.25; r=255; g=Math.round((1-p)*255); b=0; }
+  return `rgb(${r},${g},${b})`;
+}
+
+function render() {
+  const CW = chartCanvas.width, CH = chartCanvas.height;
+  const RW = rodCanvas.width, RH = rodCanvas.height;
+
+  // Clear
+  cctx.fillStyle = '#0f172a'; cctx.fillRect(0,0,CW,CH);
+  rctx.fillStyle = '#0f172a'; rctx.fillRect(0,0,RW,RH);
+
+  // Grid lines for chart
+  cctx.strokeStyle = '#1e293b'; cctx.lineWidth = 1;
+  for (let t=0; t<=100; t+=25) {
+    const y = CH - 10 - (t/100) * (CH-20);
+    cctx.beginPath(); cctx.moveTo(40,y); cctx.lineTo(CW-10,y); cctx.stroke();
+    cctx.fillStyle='#475569'; cctx.font='10px sans-serif'; cctx.textAlign='right';
+    cctx.fillText(t+'°', 36, y+4);
+  }
+
+  // Temperature profile line chart
+  const pw = (CW - 50) / (N - 1);
+  cctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const x = 40 + i * pw;
+    const y = CH - 10 - (Math.max(0,Math.min(100,u[i]))/100) * (CH-20);
+    i===0 ? cctx.moveTo(x,y) : cctx.lineTo(x,y);
+  }
+  cctx.strokeStyle = '#f59e0b'; cctx.lineWidth = 2; cctx.stroke();
+
+  // Fill under line
+  cctx.lineTo(40+(N-1)*pw, CH-10); cctx.lineTo(40,CH-10); cctx.closePath();
+  cctx.fillStyle = 'rgba(245,158,11,0.15)'; cctx.fill();
+
+  // Rod heatmap
+  const cellW = RW / N;
+  for (let i = 0; i < N; i++) {
+    rctx.fillStyle = tempColorRGB(u[i]);
+    rctx.fillRect(i * cellW, 10, cellW + 0.5, RH - 20);
+  }
+  // Rod border
+  rctx.strokeStyle = '#334155'; rctx.lineWidth = 2;
+  rctx.strokeRect(0, 10, RW, RH - 20);
+  // Temp labels at ends
+  rctx.fillStyle = '#fff'; rctx.font = 'bold 11px sans-serif'; rctx.textAlign = 'left';
+  rctx.fillText(`${u[0].toFixed(1)}°`, 4, 8);
+  rctx.textAlign = 'right';
+  rctx.fillText(`${u[N-1].toFixed(1)}°`, RW-4, 8);
+  rctx.textAlign = 'center';
+  rctx.fillText(`${u[Math.floor(N/2)].toFixed(1)}°`, RW/2, 8);
+}
+
+let playing = false;
+function animate() {
+  if (!playing) return;
+  for (let i=0; i<5; i++) step();
+  render();
+  animId = requestAnimationFrame(animate);
+}
+
+document.getElementById('playBtn').addEventListener('click', () => {
+  playing = !playing;
+  document.getElementById('playBtn').textContent = playing ? '⏸ Pause' : '▶ Play';
+  if (playing) animate();
+  else cancelAnimationFrame(animId);
+});
+document.getElementById('stepBtn').addEventListener('click', () => { step(); render(); });
+document.getElementById('resetBtn').addEventListener('click', () => {
+  playing=false; cancelAnimationFrame(animId);
+  document.getElementById('playBtn').textContent='▶ Play';
+  init();
+});
+document.getElementById('materialSel').addEventListener('change', e => {
+  document.getElementById('customAlpha').classList.toggle('hidden', e.target.value !== 'custom');
+  document.getElementById('alphaDisplay').textContent = getAlpha().toFixed(3);
+});
+document.getElementById('customAlpha').addEventListener('input', () => {
+  document.getElementById('alphaDisplay').textContent = getAlpha().toFixed(3);
+});
+
+['rodLen','leftTemp','rightTemp','initTemp'].forEach(id => {
+  const el = document.getElementById(id);
+  const disp = document.getElementById(id+'Val');
+  el.addEventListener('input', () => { disp.textContent = el.value; });
+  el.addEventListener('change', init);
+});
+
+init();
+</script>
+</body>
+</html>
